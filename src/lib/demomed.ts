@@ -7,7 +7,7 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isRetriableStatus = (status: number) => status === 429 || status === 500 || status === 503;
 
 const getApiKey = () => {
-  const key = process.env.DEMOMED_API_KEY;
+  const key = process.env.NEXT_PUBLIC_DEMOMED_API_KEY;
   if (!key) {
     throw new Error("Missing DEMOMED_API_KEY environment variable");
   }

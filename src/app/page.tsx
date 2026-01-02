@@ -17,6 +17,21 @@ type ScoreBreakdown = {
   total: number;
 };
 
+type Patient = {
+  patient_id?: unknown;
+  id?: unknown;
+  blood_pressure?: unknown;
+  temperature?: unknown;
+  age?: unknown;
+};
+
+type AlertLists = {
+  highRisk: string[];
+  fever: string[];
+  dataQuality: string[];
+  totalPatients: number;
+};
+
 const HIGH_FEVER_THRESHOLD = 101; // Spec reads as ≥101°F for high fever
 
 const parseNumber = (value: string): number | null => {
@@ -83,6 +98,84 @@ export default function Home() {
     age: "",
   });
   const [result, setResult] = useState<ScoreBreakdown | null>(null);
+  const [alerts, setAlerts] = useState<AlertLists>({
+    highRisk: [],
+    fever: [],
+    dataQuality: [],
+    totalPatients: 0,
+  });
+  const [loadingPatients, setLoadingPatients] = useState(false);
+  const [patientError, setPatientError] = useState<string | null>(null);
+
+  const parseBloodPressureReading = (raw: unknown) => {
+    if (typeof raw !== "string") {
+      return { systolic: null, diastolic: null, valid: false };
+    }
+    const trimmed = raw.trim();
+    if (!trimmed.includes("/")) {
+      return { systolic: null, diastolic: null, valid: false };
+    }
+    const [systolicRaw, diastolicRaw] = trimmed.split("/");
+    if (!systolicRaw || !diastolicRaw) {
+      return { systolic: null, diastolic: null, valid: false };
+    }
+    const systolic = parseNumber(systolicRaw);
+    const diastolic = parseNumber(diastolicRaw);
+    const valid = systolic !== null && diastolic !== null;
+    return {
+      systolic: valid ? String(systolic) : null,
+      diastolic: valid ? String(diastolic) : null,
+      valid,
+    };
+  };
+
+  const parseTemperatureValue = (raw: unknown): number | null => {
+    if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+    if (typeof raw === "string") return parseNumber(raw);
+    return null;
+  };
+
+  const parseAgeValue = (raw: unknown): number | null => {
+    if (typeof raw === "number") return Number.isFinite(raw) && raw >= 0 ? raw : null;
+    if (typeof raw === "string") {
+      const parsed = parseNumber(raw);
+      if (parsed === null || parsed < 0) return null;
+      return parsed;
+    }
+    return null;
+  };
+
+  const normalizePatient = (patient: Patient) => {
+    const id =
+      typeof patient.patient_id === "string"
+        ? patient.patient_id
+        : typeof patient.id === "string"
+          ? patient.id
+          : null;
+    if (!id) return null;
+
+    const bp = parseBloodPressureReading(patient.blood_pressure);
+    const temperature = parseTemperatureValue(patient.temperature);
+    const age = parseAgeValue(patient.age);
+
+    const bpScore = bp.valid
+      ? getBloodPressureScore(bp.systolic ?? "", bp.diastolic ?? "")
+      : 0;
+    const tempScore = getTemperatureScore(temperature !== null ? String(temperature) : "");
+    const ageScore = getAgeScore(age !== null ? String(age) : "");
+
+    const hasInvalid = !bp.valid || temperature === null || age === null;
+
+    return {
+      id,
+      bpScore,
+      tempScore,
+      ageScore,
+      total: bpScore + tempScore + ageScore,
+      temperature,
+      hasInvalid,
+    };
+  };
 
   const handleChange = (field: keyof Inputs) => (event: ChangeEvent<HTMLInputElement>) => {
     setInputs((prev) => ({ ...prev, [field]: event.target.value }));
@@ -91,6 +184,55 @@ export default function Home() {
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setResult(calculateScores(inputs));
+  };
+
+  const fetchPatients = async () => {
+    setLoadingPatients(true);
+    setPatientError(null);
+    try {
+      const response = await fetch("/api/patients?limit=20&maxPages=10", {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(`Request failed: ${response.status}`);
+      }
+      const payload = (await response.json()) as { data?: unknown[] };
+      const records = Array.isArray(payload.data) ? payload.data : [];
+
+      const highRisk: string[] = [];
+      const fever: string[] = [];
+      const dataQuality: string[] = [];
+      const seen = new Set<string>();
+
+      records.forEach((entry) => {
+        const normalized = normalizePatient(entry as Patient);
+        if (!normalized) return;
+        if (seen.has(normalized.id)) return;
+        seen.add(normalized.id);
+
+        if (normalized.total >= 4) {
+          highRisk.push(normalized.id);
+        }
+        if (normalized.temperature !== null && normalized.temperature >= 99.6) {
+          fever.push(normalized.id);
+        }
+        if (normalized.hasInvalid) {
+          dataQuality.push(normalized.id);
+        }
+      });
+
+      setAlerts({
+        highRisk,
+        fever,
+        dataQuality,
+        totalPatients: seen.size,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setPatientError(message);
+    } finally {
+      setLoadingPatients(false);
+    }
   };
 
   return (
@@ -170,11 +312,11 @@ export default function Home() {
               </button>
             </div>
           </form>
-        </section>
+      </section>
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-900">Risk Score</h2>
-          {result ? (
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-900">Risk Score</h2>
+        {result ? (
             <div className="mt-4 space-y-3">
               <div className="flex items-baseline gap-3">
                 <span className="text-4xl font-semibold text-slate-900">{result.total}</span>
@@ -198,6 +340,66 @@ export default function Home() {
           ) : (
             <p className="mt-3 text-sm text-slate-500">Enter values and calculate to see the score.</p>
           )}
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Patient Alerts</h2>
+              <p className="text-xs text-slate-500">
+                Fetches all patients via the server proxy, then scores them client-side.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={fetchPatients}
+              className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-400"
+              disabled={loadingPatients}
+            >
+              {loadingPatients ? "Fetching..." : "Fetch Patients"}
+            </button>
+          </div>
+
+          {patientError ? (
+            <p className="text-sm text-red-600">Error: {patientError}</p>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="rounded-lg bg-slate-50 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-500">
+                  High Risk (≥4)
+                </p>
+                <p className="text-base font-semibold text-slate-900">
+                  {alerts.highRisk.length}
+                </p>
+                <p className="mt-1 text-xs text-slate-500 break-words">
+                  {alerts.highRisk.length > 0 ? alerts.highRisk.join(", ") : "None"}
+                </p>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-500">
+                  Fever (≥99.6°F)
+                </p>
+                <p className="text-base font-semibold text-slate-900">{alerts.fever.length}</p>
+                <p className="mt-1 text-xs text-slate-500 break-words">
+                  {alerts.fever.length > 0 ? alerts.fever.join(", ") : "None"}
+                </p>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-500">
+                  Data Quality Issues
+                </p>
+                <p className="text-base font-semibold text-slate-900">
+                  {alerts.dataQuality.length}
+                </p>
+                <p className="mt-1 text-xs text-slate-500 break-words">
+                  {alerts.dataQuality.length > 0 ? alerts.dataQuality.join(", ") : "None"}
+                </p>
+              </div>
+            </div>
+          )}
+          <p className="text-xs text-slate-500">
+            Total patients processed: {alerts.totalPatients}
+          </p>
         </section>
       </main>
     </div>
