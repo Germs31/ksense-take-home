@@ -7,7 +7,7 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isRetriableStatus = (status: number) => status === 429 || status === 500 || status === 503;
 
 const getApiKey = () => {
-  const key = process.env.NEXT_PUBLIC_DEMOMED_API_KEY;
+  const key = process.env.DEMOMED_API_KEY ?? process.env.NEXT_PUBLIC_DEMOMED_API_KEY;
   if (!key) {
     throw new Error("Missing DEMOMED_API_KEY environment variable");
   }
@@ -21,19 +21,24 @@ const buildPatientsUrl = (page: number, limit: number) => {
   return url;
 };
 
-const fetchWithRetry = async (url: URL, apiKey: string) => {
+const fetchWithRetry = async (url: URL, apiKey: string, init?: RequestInit) => {
   let attempt = 0;
 
   while (attempt < MAX_ATTEMPTS) {
     attempt += 1;
     try {
-      const response = await fetch(url.toString(), {
-        headers: {
-          "x-api-key": apiKey,
-          Accept: "application/json",
+      const response = await fetch(
+        url.toString(),
+        {
+          ...init,
+          headers: {
+            Accept: "application/json",
+            "x-api-key": apiKey,
+            ...(init?.headers ?? {}),
+          },
+          cache: "no-store",
         },
-        cache: "no-store",
-      });
+      );
 
       if (response.ok) {
         return response;
@@ -73,6 +78,12 @@ type PatientsResponse = {
 type FetchPatientsOptions = {
   limit?: number;
   maxPages?: number;
+};
+
+export type AssessmentPayload = {
+  high_risk_patients: string[];
+  fever_patients: string[];
+  data_quality_issues: string[];
 };
 
 export const fetchAllPatients = async ({
@@ -117,4 +128,18 @@ export const fetchAllPatients = async ({
     totalPages: totalPages ?? pagesFetched,
     limit,
   };
+};
+
+export const submitAssessment = async (payload: AssessmentPayload) => {
+  const apiKey = getApiKey();
+  const url = new URL(`${BASE_URL}/submit-assessment`);
+  const response = await fetchWithRetry(url, apiKey, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return response.json() as Promise<unknown>;
 };

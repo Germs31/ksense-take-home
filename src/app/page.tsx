@@ -1,21 +1,6 @@
 "use client";
 
-import type { ChangeEvent, FormEvent } from "react";
 import { useState } from "react";
-
-type Inputs = {
-  systolic: string;
-  diastolic: string;
-  temperature: string;
-  age: string;
-};
-
-type ScoreBreakdown = {
-  bloodPressure: number;
-  temperature: number;
-  age: number;
-  total: number;
-};
 
 type Patient = {
   patient_id?: unknown;
@@ -78,26 +63,7 @@ const getAgeScore = (ageValue: string) => {
   return 0;
 };
 
-const calculateScores = (inputs: Inputs): ScoreBreakdown => {
-  const bloodPressure = getBloodPressureScore(inputs.systolic, inputs.diastolic);
-  const temperature = getTemperatureScore(inputs.temperature);
-  const age = getAgeScore(inputs.age);
-  return {
-    bloodPressure,
-    temperature,
-    age,
-    total: bloodPressure + temperature + age,
-  };
-};
-
 export default function Home() {
-  const [inputs, setInputs] = useState<Inputs>({
-    systolic: "",
-    diastolic: "",
-    temperature: "",
-    age: "",
-  });
-  const [result, setResult] = useState<ScoreBreakdown | null>(null);
   const [alerts, setAlerts] = useState<AlertLists>({
     highRisk: [],
     fever: [],
@@ -106,6 +72,12 @@ export default function Home() {
   });
   const [loadingPatients, setLoadingPatients] = useState(false);
   const [patientError, setPatientError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitResult, setSubmitResult] = useState<{
+    ok: boolean;
+    message: string;
+    details?: unknown;
+  } | null>(null);
 
   const parseBloodPressureReading = (raw: unknown) => {
     if (typeof raw !== "string") {
@@ -177,18 +149,10 @@ export default function Home() {
     };
   };
 
-  const handleChange = (field: keyof Inputs) => (event: ChangeEvent<HTMLInputElement>) => {
-    setInputs((prev) => ({ ...prev, [field]: event.target.value }));
-  };
-
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setResult(calculateScores(inputs));
-  };
-
   const fetchPatients = async () => {
     setLoadingPatients(true);
     setPatientError(null);
+    setSubmitResult(null);
     try {
       const response = await fetch("/api/patients?limit=20&maxPages=10", {
         cache: "no-store",
@@ -235,129 +199,88 @@ export default function Home() {
     }
   };
 
+  const submitAlerts = async () => {
+    if (alerts.totalPatients === 0) {
+      setSubmitResult({
+        ok: false,
+        message: "Fetch patients before submitting.",
+      });
+      return;
+    }
+
+    setSubmitting(true);
+    setSubmitResult(null);
+    try {
+      const response = await fetch("/api/submit-assessment", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          high_risk_patients: alerts.highRisk,
+          fever_patients: alerts.fever,
+          data_quality_issues: alerts.dataQuality,
+        }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(
+          `Submission failed (${response.status})${text ? `: ${text}` : ""}`,
+        );
+      }
+
+      const payload = (await response.json()) as { message?: string };
+      setSubmitResult({
+        ok: true,
+        message: payload?.message ?? "Submitted successfully",
+        details: payload,
+      });
+    } catch (error) {
+      setSubmitResult({
+        ok: false,
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <main className="mx-auto flex max-w-3xl flex-col gap-8 px-6 py-12">
         <header className="space-y-2">
-          <h1 className="text-3xl font-semibold">Patient Risk Calculator</h1>
+          <h1 className="text-3xl font-semibold">Patient Alerts</h1>
           <p className="text-sm text-slate-600">
-            Enter vitals and age to compute the total risk score. Missing or invalid values are
-            treated as 0 for that category.
+            Fetches all patients via the server proxy, scores them client-side, and lets you submit
+            the alert lists.
           </p>
         </header>
 
-        <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-          <form className="space-y-6" onSubmit={handleSubmit}>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="space-y-1">
-                <span className="text-sm font-medium text-slate-800">Systolic (mmHg)</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={inputs.systolic}
-                  onChange={handleChange("systolic")}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-300"
-                  placeholder="e.g., 128"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-sm font-medium text-slate-800">Diastolic (mmHg)</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={inputs.diastolic}
-                  onChange={handleChange("diastolic")}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-300"
-                  placeholder="e.g., 84"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-sm font-medium text-slate-800">Temperature (°F)</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={inputs.temperature}
-                  onChange={handleChange("temperature")}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-300"
-                  placeholder="e.g., 100.4"
-                />
-                <p className="text-xs text-slate-500">Normal ≤99.5, Low 99.6-100.9, High ≥101.</p>
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-sm font-medium text-slate-800">Age (years)</span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={inputs.age}
-                  onChange={handleChange("age")}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-300"
-                  placeholder="e.g., 72"
-                />
-                <p className="text-xs text-slate-500">Under 40 or 40-65: 1 point, Over 65: 2 points.</p>
-              </label>
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Fetch & Submit</h2>
+              <p className="text-xs text-slate-500">Retrieve patients, score them, then submit.</p>
             </div>
-
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-xs text-slate-500">
-                If systolic/diastolic fall in different BP stages, the higher stage score is used.
-              </p>
+            <div className="flex gap-2">
               <button
-                type="submit"
-                className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                type="button"
+                onClick={fetchPatients}
+                className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-400"
+                disabled={loadingPatients}
               >
-                Calculate Risk
+                {loadingPatients ? "Fetching..." : "Fetch Patients"}
+              </button>
+              <button
+                type="button"
+                onClick={submitAlerts}
+                className="inline-flex items-center justify-center rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-200"
+                disabled={submitting || loadingPatients || alerts.totalPatients === 0}
+              >
+                {submitting ? "Submitting..." : "Submit Alerts"}
               </button>
             </div>
-          </form>
-      </section>
-
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-slate-900">Risk Score</h2>
-        {result ? (
-            <div className="mt-4 space-y-3">
-              <div className="flex items-baseline gap-3">
-                <span className="text-4xl font-semibold text-slate-900">{result.total}</span>
-                <span className="text-sm text-slate-500">Total</span>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-3">
-                <div className="rounded-lg bg-slate-50 p-3">
-                  <p className="text-xs uppercase tracking-wide text-slate-500">Blood Pressure</p>
-                  <p className="text-base font-medium text-slate-900">{result.bloodPressure} pts</p>
-                </div>
-                <div className="rounded-lg bg-slate-50 p-3">
-                  <p className="text-xs uppercase tracking-wide text-slate-500">Temperature</p>
-                  <p className="text-base font-medium text-slate-900">{result.temperature} pts</p>
-                </div>
-                <div className="rounded-lg bg-slate-50 p-3">
-                  <p className="text-xs uppercase tracking-wide text-slate-500">Age</p>
-                  <p className="text-base font-medium text-slate-900">{result.age} pts</p>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <p className="mt-3 text-sm text-slate-500">Enter values and calculate to see the score.</p>
-          )}
-        </section>
-
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">Patient Alerts</h2>
-              <p className="text-xs text-slate-500">
-                Fetches all patients via the server proxy, then scores them client-side.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={fetchPatients}
-              className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-400"
-              disabled={loadingPatients}
-            >
-              {loadingPatients ? "Fetching..." : "Fetch Patients"}
-            </button>
           </div>
 
           {patientError ? (
@@ -400,6 +323,22 @@ export default function Home() {
           <p className="text-xs text-slate-500">
             Total patients processed: {alerts.totalPatients}
           </p>
+          {submitResult && (
+            <div
+              className={`rounded-lg border p-3 text-sm ${
+                submitResult.ok
+                  ? "border-green-200 bg-green-50 text-green-900"
+                  : "border-red-200 bg-red-50 text-red-900"
+              }`}
+            >
+              <p className="font-medium">{submitResult.message}</p>
+              {submitResult.details ? (
+                <pre className="mt-2 overflow-auto whitespace-pre-wrap text-xs">
+                  {JSON.stringify(submitResult.details, null, 2)}
+                </pre>
+              ) : null}
+            </div>
+          )}
         </section>
       </main>
     </div>
